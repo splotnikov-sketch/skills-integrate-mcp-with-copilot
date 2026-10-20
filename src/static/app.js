@@ -3,15 +3,105 @@ document.addEventListener("DOMContentLoaded", () => {
   const activitySelect = document.getElementById("activity");
   const signupForm = document.getElementById("signup-form");
   const messageDiv = document.getElementById("message");
+  const loginDialog = document.getElementById("login-dialog");
+  const loginForm = document.getElementById("login-form");
+  const loginError = document.getElementById("login-error");
+  let accessToken = null;
+
+  function escapeHTML(value) {
+    return String(value).replace(/[&<>"']/g, (character) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    })[character]);
+  }
+
+  function setAccount(token, username = "") {
+    accessToken = token;
+    signupForm.classList.toggle("hidden", !token);
+    document.getElementById("login-notice").classList.toggle("hidden", !!token);
+    document.getElementById("login-button").classList.toggle("hidden", !!token);
+    document.getElementById("logout-button").classList.toggle("hidden", !token);
+    document.getElementById("account-status").textContent =
+      token ? `Teacher: ${username}` : "Student view";
+    document.querySelectorAll(".delete-btn").forEach((button) => {
+      button.classList.toggle("hidden", !token);
+    });
+  }
+
+  function handleAuthFailure(response) {
+    if (response.status === 401) {
+      setAccount(null);
+    }
+  }
+
+  document.getElementById("account-button").addEventListener("click", (event) => {
+    const panel = document.getElementById("account-panel");
+    panel.classList.toggle("hidden");
+    event.currentTarget.setAttribute("aria-expanded", String(!panel.classList.contains("hidden")));
+  });
+  document.getElementById("login-button").addEventListener("click", () => {
+    loginError.textContent = "";
+    loginDialog.showModal();
+  });
+  document.getElementById("cancel-login").addEventListener("click", () => loginDialog.close());
+  loginDialog.addEventListener("close", () => loginForm.reset());
+
+  loginForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const username = document.getElementById("username").value;
+    const submit = loginForm.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    loginError.textContent = "";
+    try {
+      const response = await fetch("/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password: document.getElementById("password").value }),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        loginError.textContent = typeof result.detail === "string" ? result.detail : "Login failed. Check your credentials.";
+        return;
+      }
+      setAccount(result.access_token, username);
+      loginDialog.close();
+    } catch (error) {
+      loginError.textContent = "Unable to log in. Please try again.";
+      console.error("Error logging in:", error);
+    } finally {
+      document.getElementById("password").value = "";
+      submit.disabled = false;
+    }
+  });
+
+  document.getElementById("logout-button").addEventListener("click", async () => {
+    try {
+      const response = await fetch("/auth/logout", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!response.ok && response.status !== 401) {
+        throw new Error("Server could not revoke the session");
+      }
+      setAccount(null);
+      messageDiv.textContent = "Logged out.";
+      messageDiv.className = "success";
+    } catch (error) {
+      messageDiv.textContent = "Logout failed. Please try again.";
+      messageDiv.className = "error";
+      console.error("Error logging out:", error);
+    }
+  });
 
   // Function to fetch activities from API
   async function fetchActivities() {
     try {
       const response = await fetch("/activities");
+      if (!response.ok) throw new Error("Unable to load activities");
       const activities = await response.json();
 
       // Clear loading message
       activitiesList.innerHTML = "";
+      activitySelect.replaceChildren(new Option("-- Select an activity --", ""));
 
       // Populate activities list
       Object.entries(activities).forEach(([name, details]) => {
@@ -30,7 +120,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 ${details.participants
                   .map(
                     (email) =>
-                      `<li><span class="participant-email">${email}</span><button class="delete-btn" data-activity="${name}" data-email="${email}">❌</button></li>`
+                      `<li><span class="participant-email">${escapeHTML(email)}</span><button class="delete-btn ${accessToken ? "" : "hidden"}" aria-label="Unregister ${escapeHTML(email)}" data-activity="${escapeHTML(name)}" data-email="${escapeHTML(email)}">❌</button></li>`
                   )
                   .join("")}
               </ul>
@@ -38,9 +128,9 @@ document.addEventListener("DOMContentLoaded", () => {
             : `<p><em>No participants yet</em></p>`;
 
         activityCard.innerHTML = `
-          <h4>${name}</h4>
-          <p>${details.description}</p>
-          <p><strong>Schedule:</strong> ${details.schedule}</p>
+          <h4>${escapeHTML(name)}</h4>
+          <p>${escapeHTML(details.description)}</p>
+          <p><strong>Schedule:</strong> ${escapeHTML(details.schedule)}</p>
           <p><strong>Availability:</strong> ${spotsLeft} spots left</p>
           <div class="participants-container">
             ${participantsHTML}
@@ -80,10 +170,12 @@ document.addEventListener("DOMContentLoaded", () => {
         )}/unregister?email=${encodeURIComponent(email)}`,
         {
           method: "DELETE",
+          headers: { Authorization: `Bearer ${accessToken}` },
         }
       );
 
       const result = await response.json();
+      handleAuthFailure(response);
 
       if (response.ok) {
         messageDiv.textContent = result.message;
@@ -124,10 +216,12 @@ document.addEventListener("DOMContentLoaded", () => {
         )}/signup?email=${encodeURIComponent(email)}`,
         {
           method: "POST",
+          headers: { Authorization: `Bearer ${accessToken}` },
         }
       );
 
       const result = await response.json();
+      handleAuthFailure(response);
 
       if (response.ok) {
         messageDiv.textContent = result.message;
